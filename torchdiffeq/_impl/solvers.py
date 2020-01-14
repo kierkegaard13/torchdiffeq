@@ -44,8 +44,10 @@ class FixedGridODESolver(object):
 
         self.func = func
         self.y0 = y0
+        self.static_grid = True
 
         if step_size is not None and grid_constructor is None:
+            self.static_grid = False
             self.grid_constructor = self._grid_constructor_from_step_size(step_size)
         elif grid_constructor is None:
             self.grid_constructor = lambda f, y0, t: t
@@ -77,6 +79,11 @@ class FixedGridODESolver(object):
         pass
 
     def integrate(self, t):
+        if t.dim() > 2:
+            raise Exception('3D Tensors not supported for time grid')
+        if not self.static_grid and t.dim() == 2:
+            raise Exception('You must explicitly pass in the time grid for 2D grids')
+
         _assert_increasing(t)
         t = t.type_as(self.y0[0])
         time_grid = self.grid_constructor(self.func, self.y0, t)
@@ -87,22 +94,40 @@ class FixedGridODESolver(object):
 
         j = 1
         y0 = self.y0
+        if time_grid.dim() == 1:
+            t_len = t.shape[0]
+            time_pairs = zip(time_grid[:-1], time_grid[1:])
+        else:
+            t_len = t.shape[1]
+            time_pairs = zip(time_grid[:, :-1], time_grid[:, 1:])
+
         for t0, t1 in zip(time_grid[:-1], time_grid[1:]):
             dy = self.step_func(self.func, t0, t1 - t0, y0)
             y1 = tuple(y0_ + dy_ for y0_, dy_ in zip(y0, dy))
 
-            while j < len(t) and t1 >= t[j]:
-                solution.append(self._linear_interp(t0, t1, y0, y1, t[j]))
-                j += 1
+            if time_grid.dim() == 1:
+                while j < t_len and t1 >= t[j]:
+                    solution.append(self._linear_interp(t0, t1, y0, y1, t[j]))
+                    j += 1
+            else:
+                while j < t_len and (t1 >= t[:,j]).all():
+                    solution.append(self._linear_interp(t0, t1, y0, y1, t[j]))
+                    j += 1
             y0 = y1
 
         return tuple(map(torch.stack, tuple(zip(*solution))))
 
     def _linear_interp(self, t0, t1, y0, y1, t):
-        if t == t0:
-            return y0
-        if t == t1:
-            return y1
+        if t.dim() == 1:
+            if t == t0:
+                return y0
+            if t == t1:
+                return y1
+        else:
+            if (t == t0).all():
+                return y0
+            if (t == t1).all():
+                return y1
         t0, t1, t = t0.to(y0[0]), t1.to(y0[0]), t.to(y0[0])
         slope = tuple((y1_ - y0_) / (t1 - t0) for y0_, y1_, in zip(y0, y1))
         return tuple(y0_ + slope_ * (t - t0) for y0_, slope_ in zip(y0, slope))

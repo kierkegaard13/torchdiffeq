@@ -53,7 +53,12 @@ def _is_finite(tensor):
 
 
 def _decreasing(t):
-    return (t[1:] < t[:-1]).all()
+    if t.dim() == 1:
+        return (t[1:] < t[:-1]).all()
+    elif t.dim() == 2:
+        return (t[:,1:] < t[:,-1]).all()
+    else:
+        raise Exception('3D Tensors not supported for time grid')
 
 
 def _assert_increasing(t):
