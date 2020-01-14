@@ -104,7 +104,7 @@ class FixedGridODESolver(object):
             t_len = t.shape[1]
             time_pairs = zip(time_grid[:, :-1], time_grid[:, 1:])
 
-        for t0, t1 in zip(time_grid[:-1], time_grid[1:]):
+        for t0, t1 in time_pairs:
             dy = self.step_func(self.func, t0, t1 - t0, y0)
             y1 = tuple(y0_ + dy_ for y0_, dy_ in zip(y0, dy))
 
