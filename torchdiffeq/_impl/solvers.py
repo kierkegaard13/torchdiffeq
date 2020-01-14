@@ -105,6 +105,9 @@ class FixedGridODESolver(object):
             time_pairs = zip(time_grid[:, :-1].permute(1, 0), time_grid[:, 1:].permute(1, 0))
 
         for t0, t1 in time_pairs:
+            if time_grid.dim() == 2:
+                t0 = t0.view(-1, *([1] * (y0[0].dim() - 1)))
+                t1 = t1.view(-1, *([1] * (y0[0].dim() - 1)))
             dy = self.step_func(self.func, t0, t1 - t0, y0)
             y1 = tuple(y0_ + dy_ for y0_, dy_ in zip(y0, dy))
 
@@ -113,8 +116,9 @@ class FixedGridODESolver(object):
                     solution.append(self._linear_interp(t0, t1, y0, y1, t[j]))
                     j += 1
             else:
-                while j < t_len and (t1 >= t[:,j]).all():
-                    solution.append(self._linear_interp(t0, t1, y0, y1, t[j]))
+                while j < t_len and (t1.squeeze() >= t[:,j]).all():
+                    shaped_t = t[:,j].view(-1, *([1] * (t0.dim() - 1)))
+                    solution.append(self._linear_interp(t0, t1, y0, y1, shaped_t))
                     j += 1
             y0 = y1
 
