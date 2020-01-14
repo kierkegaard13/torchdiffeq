@@ -56,7 +56,7 @@ def _decreasing(t):
     if t.dim() == 1:
         return (t[1:] < t[:-1]).all()
     elif t.dim() == 2:
-        return (t[:,1:] < t[:,-1]).all()
+        return (t[:,1:] < t[:,:-1]).all()
     else:
         raise Exception('3D Tensors not supported for time grid')
 
