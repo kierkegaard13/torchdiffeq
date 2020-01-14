@@ -87,7 +87,10 @@ class FixedGridODESolver(object):
         _assert_increasing(t)
         t = t.type_as(self.y0[0])
         time_grid = self.grid_constructor(self.func, self.y0, t)
-        assert time_grid[0] == t[0] and time_grid[-1] == t[-1]
+        if t.dim() == 1:
+            assert time_grid[0] == t[0] and time_grid[-1] == t[-1]
+        else:
+            assert (time_grid[:,0] == t[:,0]).all() and (time_grid[:,-1] == t[:,-1]).all()
         time_grid = time_grid.to(self.y0[0])
 
         solution = [self.y0]
