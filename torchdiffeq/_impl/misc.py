@@ -62,7 +62,12 @@ def _decreasing(t):
 
 
 def _assert_increasing(t):
-    assert (t[1:] > t[:-1]).all(), 't must be strictly increasing or decreasing'
+    if t.dim() == 1:
+        assert (t[1:] > t[:-1]).all(), 't must be strictly increasing or decreasing'
+    elif t.dim() == 2:
+        assert (t[:,1:] > t[:,:-1]).all(), 't must be strictly increasing or decreasing'
+    else:
+        raise Exception('3D Tensors not supported for time grid')
 
 
 def _is_iterable(inputs):
