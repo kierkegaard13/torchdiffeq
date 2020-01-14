@@ -102,7 +102,7 @@ class FixedGridODESolver(object):
             time_pairs = zip(time_grid[:-1], time_grid[1:])
         else:
             t_len = t.shape[1]
-            time_pairs = zip(time_grid[:, :-1], time_grid[:, 1:])
+            time_pairs = zip(time_grid[:, :-1].permute(1, 0), time_grid[:, 1:].permute(1, 0))
 
         for t0, t1 in time_pairs:
             dy = self.step_func(self.func, t0, t1 - t0, y0)
