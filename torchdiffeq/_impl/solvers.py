@@ -23,12 +23,21 @@ class AdaptiveStepsizeODESolver(object):
         raise NotImplementedError
 
     def integrate(self, t):
+        if t.dim() > 2:
+            raise Exception('3D Tensors not supported for time grid')
         _assert_increasing(t)
         solution = [self.y0]
         t = t.to(self.y0[0].device, torch.float64)
         self.before_integrate(t)
-        for i in range(1, len(t)):
-            y = self.advance(t[i])
+        if t.dim() == 1:
+            t_len = len(t)
+        else:
+            t_len = len(t[0])
+        for i in range(1, t_len):
+            if t.dim() == 1:
+                y = self.advance(t[i])
+            else:
+                y = self.advance(t[:,i])
             solution.append(y)
         return tuple(map(torch.stack, tuple(zip(*solution))))
 

@@ -55,8 +55,16 @@ def _interp_evaluate(coefficients, t0, t1, t):
     t1 = _convert_to_tensor(t1, dtype=dtype, device=device)
     t = _convert_to_tensor(t, dtype=dtype, device=device)
 
-    assert (t0 <= t) & (t <= t1), 'invalid interpolation, fails `t0 <= t <= t1`: {}, {}, {}'.format(t0, t, t1)
+    if t0.shape[0] > 1:
+        increasing_check = lambda condition: condition.all()
+    else:
+        increasing_check = lambda condition: condition
+
+    assert increasing_check(t0 <= t) & increasing_check(t <= t1), \
+        'invalid interpolation, fails `t0 <= t <= t1`: {}, {}, {}'.format(t0, t, t1)
     x = ((t - t0) / (t1 - t0)).type(dtype).to(device)
+    if t0.shape[0] > 1:
+        x = x.view(-1, *([1] * (coefficients[0][0].dim() - 1)))
 
     xs = [torch.tensor(1).type(dtype).to(device), x]
     for _ in range(2, len(coefficients)):
