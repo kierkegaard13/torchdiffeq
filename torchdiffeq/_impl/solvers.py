@@ -27,7 +27,7 @@ class AdaptiveStepsizeODESolver(object):
             raise Exception('3D Tensors not supported for time grid')
         _assert_increasing(t)
         solution = [self.y0]
-        t = t.to(self.y0[0].device, torch.float64)
+        t = t.to(self.y0[0].device, self.y0[0].dtype)
         self.before_integrate(t)
         if t.dim() == 1:
             t_len = len(t)
