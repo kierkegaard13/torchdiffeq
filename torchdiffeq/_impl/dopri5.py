@@ -102,7 +102,7 @@ class Dopri5Solver(AdaptiveStepsizeODESolver):
             n_steps += 1
         return _interp_evaluate(self.rk_state.interp_coeff, self.rk_state.t0, self.rk_state.t1, next_t)
 
-    def _adaptive_dopri5_step(self, rk_state):
+    def _adaptive_dopri5_step(self, rk_state, mask=None):
         """Take an adaptive Runge-Kutta step to integrate the ODE."""
         y0, f0, t0_prev, t0, dt, interp_coeff = rk_state
         ########################################################
