@@ -23,28 +23,55 @@ class _VCABMState(collections.namedtuple('_VCABMState', 'y_n, prev_f, prev_t, ne
     """
 
 
-def g_and_explicit_phi(prev_t, next_t, implicit_phi, k):
+def g_and_explicit_phi(prev_t, next_t, implicit_phi, k, batched=False, reshape=None):
     curr_t = prev_t[0]
     dt = next_t - prev_t[0]
 
-    g = torch.empty(k + 1).to(prev_t[0])
+    if batched:
+        g = torch.empty(curr_t.shape[0], k + 1).to(prev_t[0])
+    else:
+        g = torch.empty(k + 1).to(prev_t[0])
     explicit_phi = collections.deque(maxlen=k)
     beta = torch.tensor(1).to(prev_t[0])
 
-    g[0] = 1
-    c = 1 / torch.arange(1, k + 2).to(prev_t[0])
+    if batched:
+        g[:, 0] = 1
+        c = (1 / torch.arange(1, k + 2).to(prev_t[0])).unsqueeze(0).repeat(curr_t.shape[0], 1)
+    else:
+        g[0] = 1
+        c = 1 / torch.arange(1, k + 2).to(prev_t[0])
     explicit_phi.append(implicit_phi[0])
 
     for j in range(1, k):
         beta = (next_t - prev_t[j - 1]) / (curr_t - prev_t[j]) * beta
+        beta[torch.isnan(beta)] = 0
+        beta[torch.isinf(beta)] = 0
         beat_cast = beta.to(implicit_phi[j][0])
-        explicit_phi.append(tuple(iphi_ * beat_cast for iphi_ in implicit_phi[j]))
+        explicit_phi.append(
+            tuple(iphi_ * reshape(beat_cast, iphi_) if batched else iphi_ * beat_cast for iphi_ in implicit_phi[j])
+        )
 
-        c = c[:-1] - c[1:] if j == 1 else c[:-1] - c[1:] * dt / (next_t - prev_t[j - 1])
-        g[j] = c[0]
+        if batched:
+            c = c[:, :-1] - c[:, 1:] if j == 1 else c[:, :-1] - c[:, 1:] * (dt / (next_t - prev_t[j - 1])).unsqueeze(1)
+            g[:, j] = c[:, 0]
+        else:
+            c = c[:-1] - c[1:] if j == 1 else c[:-1] - c[1:] * dt / (next_t - prev_t[j - 1])
+            g[j] = c[0]
 
-    c = c[:-1] - c[1:] * dt / (next_t - prev_t[k - 1])
-    g[k] = c[0]
+    if batched:
+        c = c[:, :-1] - c[:, 1:] * (dt / (next_t - prev_t[k - 1])).unsqueeze(1)
+        g[:, k] = c[:, 0]
+        c[torch.isnan(c)] = 0
+        g[torch.isnan(g)] = 0
+        c[torch.isinf(c)] = 0
+        g[torch.isinf(g)] = 0
+    else:
+        c = c[:-1] - c[1:] * dt / (next_t - prev_t[k - 1])
+        g[k] = c[0]
+        c[torch.isnan(c)] = 0
+        g[torch.isnan(g)] = 0
+        c[torch.isinf(c)] = 0
+        g[torch.isinf(g)] = 0
 
     return g, explicit_phi
 
@@ -82,35 +109,77 @@ class VariableCoefficientAdamsBashforth(AdaptiveStepsizeODESolver):
         prev_t = collections.deque(maxlen=self.max_order + 1)
         phi = collections.deque(maxlen=self.max_order)
 
-        t0 = t[0]
+        if t.dim() == 1:
+            t0 = t[0]
+        else:
+            t0 = t[:,0]
         f0 = self.func(t0.type_as(self.y0[0]), self.y0)
         prev_t.appendleft(t0)
         prev_f.appendleft(f0)
         phi.appendleft(f0)
-        first_step = _select_initial_step(self.func, t[0], self.y0, 2, self.rtol[0], self.atol[0], f0=f0).to(t)
+        first_step = _select_initial_step(self.func, t0, self.y0, 2, self.rtol[0], self.atol[0], f0=f0).to(t)
 
-        self.vcabm_state = _VCABMState(self.y0, prev_f, prev_t, next_t=t[0] + first_step, phi=phi, order=1)
+        self.vcabm_state = _VCABMState(self.y0, prev_f, prev_t, next_t=t0 + first_step, phi=phi, order=1)
 
     def advance(self, final_t):
         final_t = _convert_to_tensor(final_t).to(self.vcabm_state.prev_t[0])
-        while final_t > self.vcabm_state.prev_t[0]:
-            self.vcabm_state = self._adaptive_adams_step(self.vcabm_state, final_t)
-        assert final_t == self.vcabm_state.prev_t[0]
+        if self.vcabm_state.prev_t[0].shape[0] > 1:
+            increasing_check = lambda condition: condition.any()
+        else:
+            increasing_check = lambda condition: condition
+        count = 0
+        while increasing_check(final_t > self.vcabm_state.prev_t[0]):
+            mask = None
+            if self.vcabm_state.prev_t[0].shape[0] > 1:
+                mask = (final_t > self.vcabm_state.prev_t[0]).float()
+            self.vcabm_state = self._adaptive_adams_step(self.vcabm_state, final_t, mask)
+            count += 1
+        if self.vcabm_state.prev_t[0].shape[0] > 1:
+            assert (final_t == self.vcabm_state.prev_t[0]).all()
+        else:
+            assert final_t == self.vcabm_state.prev_t[0]
         return self.vcabm_state.y_n
 
-    def _adaptive_adams_step(self, vcabm_state, final_t):
+    def _adaptive_adams_step(self, vcabm_state, final_t, mask=None):
         y0, prev_f, prev_t, next_t, prev_phi, order = vcabm_state
-        if next_t > final_t:
-            next_t = final_t
+        batched = False
+        reshape = lambda x, y: x.view(-1, *([1] * (y.dim() - 1)))
+        select = lambda x, y, m: (1 - m) * x + m * y if m is not None else y
+
+        expanded_mask = None
+        if mask is not None:
+            expanded_mask = mask.view(-1, *([1] * (y0[0].dim() - 1)))
+
+        if next_t.shape[0] > 1:
+            batched = True
+            increasing_mask = (next_t > final_t).float()
+            dt_prev = (next_t - prev_t[0])
+            next_t = (1 - increasing_mask) * next_t + increasing_mask * final_t
+        else:
+            if next_t > final_t:
+                next_t = final_t
+
         dt = (next_t - prev_t[0])
         dt_cast = dt.to(y0[0])
 
         # Explicit predictor step.
-        g, phi = g_and_explicit_phi(prev_t, next_t, prev_phi, order)
+        g, phi = g_and_explicit_phi(prev_t, next_t, prev_phi, order, batched, reshape)
         g = g.to(y0[0])
+        if batched:
+            xs = g[:, :max(1, order - 1)].permute(1, 0)
+            go = g[:, order]
+            go1 = g[:, order - 1]
+            go2 = g[:, order - 2]
+            go3 = g[:, order - 3]
+        else:
+            xs = g[:max(1, order - 1)]
+            go = g[order]
+            go1 = g[order - 1]
+            go2 = g[order - 2]
+            go3 = g[order - 3]
         p_next = tuple(
-            y0_ + _scaled_dot_product(dt_cast, g[:max(1, order - 1)], phi_[:max(1, order - 1)])
-            for y0_, phi_ in zip(y0, tuple(zip(*phi)))
+            select(y0[i], y0_ + _scaled_dot_product(dt_cast, xs, phi_[:max(1, order - 1)]), expanded_mask)
+            for i, (y0_, phi_) in enumerate(zip(y0, tuple(zip(*phi))))
         )
 
         # Update phi to implicit.
@@ -119,7 +188,9 @@ class VariableCoefficientAdamsBashforth(AdaptiveStepsizeODESolver):
 
         # Implicit corrector step.
         y_next = tuple(
-            p_next_ + dt_cast * g[order - 1] * iphi_ for p_next_, iphi_ in zip(p_next, implicit_phi_p[order - 1])
+            select(y0[i], p_next_ + reshape(dt_cast * go1, iphi_) * iphi_, expanded_mask)
+            if batched else p_next_ + dt_cast * go1 * iphi_
+            for i, (p_next_, iphi_) in enumerate(zip(p_next, implicit_phi_p[order - 1]))
         )
 
         # Error estimation.
@@ -127,7 +198,11 @@ class VariableCoefficientAdamsBashforth(AdaptiveStepsizeODESolver):
             atol_ + rtol_ * torch.max(torch.abs(y0_), torch.abs(y1_))
             for atol_, rtol_, y0_, y1_ in zip(self.atol, self.rtol, y0, y_next)
         )
-        local_error = tuple(dt_cast * (g[order] - g[order - 1]) * iphi_ for iphi_ in implicit_phi_p[order])
+        local_error = tuple(
+            reshape(dt_cast * (go - go1), iphi_) * iphi_
+            if batched else dt_cast * (go - go1) * iphi_
+            for iphi_ in implicit_phi_p[order]
+        )
         error_k = _compute_error_ratio(local_error, tolerance)
         accept_step = (torch.tensor(error_k) <= 1).all()
 
@@ -146,16 +221,28 @@ class VariableCoefficientAdamsBashforth(AdaptiveStepsizeODESolver):
             next_order = min(order + 1, 3, self.max_order)
         else:
             error_km1 = _compute_error_ratio(
-                tuple(dt_cast * (g[order - 1] - g[order - 2]) * iphi_ for iphi_ in implicit_phi_p[order - 1]), tolerance
+                tuple(
+                    reshape(dt_cast * (go1 - go2), iphi_) * iphi_
+                    if batched else dt_cast * (go1 - go2) * iphi_
+                    for iphi_ in implicit_phi_p[order - 1]
+                ), tolerance
             )
             error_km2 = _compute_error_ratio(
-                tuple(dt_cast * (g[order - 2] - g[order - 3]) * iphi_ for iphi_ in implicit_phi_p[order - 2]), tolerance
+                tuple(
+                    reshape(dt_cast * (go2 - go3), iphi_) * iphi_
+                    if batched else dt_cast * (go2 - go3) * iphi_
+                    for iphi_ in implicit_phi_p[order - 2]
+                ), tolerance
             )
             if min(error_km1 + error_km2) < max(error_k):
                 next_order = order - 1
             elif order < self.max_order:
                 error_kp1 = _compute_error_ratio(
-                    tuple(dt_cast * gamma_star[order] * iphi_ for iphi_ in implicit_phi_p[order]), tolerance
+                    tuple(
+                        reshape(dt_cast * gamma_star[order], iphi_) * iphi_
+                        if batched else dt_cast * gamma_star[order] * iphi_
+                        for iphi_ in implicit_phi_p[order]
+                    ), tolerance
                 )
                 if max(error_kp1) < max(error_k):
                     next_order = order + 1
@@ -164,6 +251,11 @@ class VariableCoefficientAdamsBashforth(AdaptiveStepsizeODESolver):
         dt_next = dt if next_order > order else _optimal_step_size(
             dt, error_k, self.safety, self.ifactor, self.dfactor, order=order + 1
         )
+
+        if batched:
+            dt_next = (1 - mask) * dt_prev + mask * dt_next
+            stalled = (final_t > next_t) & (dt_next == 0)
+            dt_next[stalled] = final_t[stalled] - next_t[stalled]
 
         prev_f.appendleft(next_f0)
         prev_t.appendleft(next_t)

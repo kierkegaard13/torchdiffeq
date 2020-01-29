@@ -65,28 +65,43 @@ class AdaptiveHeunSolver(AdaptiveStepsizeODESolver):
 
     def before_integrate(self, t):
         f0 = self.func(t[0].type_as(self.y0[0]), self.y0)
+        if t.dim() == 1:
+            t0 = t[0]
+        else:
+            t0 = t[:,0]
         if self.first_step is None:
-            first_step = _select_initial_step(self.func, t[0], self.y0, 4, self.rtol[0], self.atol[0], f0=f0).to(t)
+            first_step = _select_initial_step(self.func, t0, self.y0, 4, self.rtol[0], self.atol[0], f0=f0).to(t)
         else:
             first_step = _convert_to_tensor(0.01, dtype=t.dtype, device=t.device)
-        self.rk_state = _RungeKuttaState(self.y0, f0, t[0], t[0], first_step, interp_coeff=[self.y0] * 5)
+        self.rk_state = _RungeKuttaState(self.y0, f0, t0, t0, first_step, interp_coeff=[self.y0] * 5)
 
     def advance(self, next_t):
         """Interpolate through the next time point, integrating as necessary."""
         n_steps = 0
-        while next_t > self.rk_state.t1:
+        if next_t.shape[0] > 1:
+            increasing_check = lambda condition: condition.any()
+        else:
+            increasing_check = lambda condition: condition
+        while increasing_check(next_t > self.rk_state.t1):
             assert n_steps < self.max_num_steps, 'max_num_steps exceeded ({}>={})'.format(n_steps, self.max_num_steps)
-            self.rk_state = self._adaptive_heun_step(self.rk_state)
+            mask = None
+            if next_t.shape[0] > 1:
+                mask = (next_t > self.rk_state.t1).float()
+            self.rk_state = self._adaptive_heun_step(self.rk_state, mask)
             n_steps += 1
         return _interp_evaluate(self.rk_state.interp_coeff, self.rk_state.t0, self.rk_state.t1, next_t)
 
-    def _adaptive_heun_step(self, rk_state):
+    def _adaptive_heun_step(self, rk_state, mask=None):
         """Take an adaptive Runge-Kutta step to integrate the ODE."""
-        y0, f0, _, t0, dt, interp_coeff = rk_state
+        y0, f0, t0_prev, t0, dt, interp_coeff = rk_state
         ########################################################
         #                      Assertions                      #
         ########################################################
-        assert t0 + dt > t0, 'underflow in dt {}'.format(dt.item())
+        if t0.shape[0] > 1:
+            increasing_check = (t0 + dt > t0).all()
+        else:
+            increasing_check = t0 + dt > 0
+        assert increasing_check, 'underflow in dt {}'.format(dt.item())
         for y0_ in y0:
             assert _is_finite(torch.abs(y0_)), 'non-finite values in state `y`: {}'.format(y0_)
         y1, f1, y1_error, k = _runge_kutta_step(self.func, y0, f0, t0, dt, tableau=_ADAPTIVE_HEUN_TABLEAU)
@@ -107,5 +122,14 @@ class AdaptiveHeunSolver(AdaptiveStepsizeODESolver):
         dt_next = _optimal_step_size(
             dt, mean_sq_error_ratio, safety=self.safety, ifactor=self.ifactor, dfactor=self.dfactor, order=5
         )
+        if mask is not None:
+            expanded_mask = mask.view(-1, *([1] * (y_next[0].dim() - 1)))
+            y_next = tuple((1 - expanded_mask) * y0 + expanded_mask * y1 for y0, y1 in zip(y0, y_next))
+            f_next = tuple((1 - expanded_mask) * f0 + expanded_mask * f1 for f0, f1 in zip(f0, f_next))
+            t_next = (1 - mask) * t0 + mask * t_next
+            t0 = (1 - mask) * t0_prev + mask * t0
+            if dt_next.dim() > 0:
+                dt_next = (1 - mask) * dt + mask * dt_next
+
         rk_state = _RungeKuttaState(y_next, f_next, t0, t_next, dt_next, interp_coeff)
         return rk_state

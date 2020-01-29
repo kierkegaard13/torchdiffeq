@@ -22,7 +22,10 @@ def _possibly_nonzero(x):
 def _scaled_dot_product(scale, xs, ys):
     """Calculate a scaled, vector inner product between lists of Tensors."""
     # Using _possibly_nonzero lets us avoid wasted computation.
-    return sum([(scale * x) * y for x, y in zip(xs, ys) if _possibly_nonzero(x) or _possibly_nonzero(y)])
+    reshape = lambda x, y: x.view(-1, *([1] * (y.dim() - 1)))
+    mdim = ys[0].dim() > 1
+    return sum([reshape(scale * x, y) * y if mdim else (scale * x) * y
+                for x, y in zip(xs, ys) if _possibly_nonzero(x) or _possibly_nonzero(y)])
 
 
 def _dot_product(xs, ys):
